@@ -1,0 +1,119 @@
+// accessibility: placeholder
+import React from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
+
+interface FestivalSectionDetailCardProps {
+  festival: any;
+  section: string;
+  onBack: () => void;
+}
+
+const formatFestivalDate = (dateStr: string) => {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const year = parts[0];
+    const monthIndex = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    const monthName = months[monthIndex] || parts[1];
+    return `${day} ${monthName} ${year}`;
+  }
+  return dateStr;
+};
+
+const FestivalSectionDetailCard = ({ festival, section, onBack }: FestivalSectionDetailCardProps) => {
+  const sectionMap: Record<string, string> = {
+    About: festival.summary,
+    Origin: festival.origin,
+    Purpose: festival.purpose,
+    Importance: festival.importance,
+    Celebration: festival.celebration,
+    Mantra: festival.mantra,
+  };
+  const sectionValue = sectionMap[section] || '';
+
+  return (
+    <View style={styles.page}>
+      <View style={styles.heroCard}>
+        <Text style={styles.heroSubtitle}>{section}</Text>
+        <Text style={styles.heroTitle}>{festival.festival_name}</Text>
+        <Text style={styles.heroDate}>{formatFestivalDate(festival.date)}</Text>
+      </View>
+
+      <View style={styles.contentCard}>
+        <Text style={styles.contentTitle}>{section}</Text>
+        <Text style={styles.contentBody}>{sectionValue}</Text>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  page: {
+    padding: SPACING.md,
+    paddingBottom: SPACING.xl,
+    backgroundColor: COLORS.background,
+  },
+  heroCard: {
+    borderRadius: BORDER_RADIUS.xl,
+    backgroundColor: '#083344',
+    padding: SPACING.lg,
+    marginBottom: SPACING.md,
+  },
+  pageHeader: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  backButton: {
+    padding: SPACING.xs,
+    backgroundColor: 'transparent',
+  },
+  backText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  heroSubtitle: {
+    color: '#38BDF8',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+    fontWeight: '700',
+  },
+  heroTitle: {
+    color: '#FFFFFF',
+    fontSize: 24,
+    fontWeight: '800',
+    marginBottom: SPACING.xs,
+  },
+  heroDate: {
+    color: '#7DD3FC',
+    fontSize: 14,
+  },
+  contentCard: {
+    borderRadius: BORDER_RADIUS.xl,
+    backgroundColor: 'transparent',
+    padding: SPACING.lg,
+  },
+  contentTitle: {
+    color: '#111827',
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: SPACING.sm,
+  },
+  contentBody: {
+    color: '#4B5563',
+    fontSize: 15,
+    lineHeight: 24,
+  },
+});
+
+export default FestivalSectionDetailCard;
