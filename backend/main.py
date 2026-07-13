@@ -4084,8 +4084,19 @@ async def get_posts_by_hashtag(hashtag: str, limit: int = 20, offset: int = 0, t
 
     paged_posts = visible_posts[safe_offset:safe_offset + safe_limit]
 
+    # Fetch comments for all posts concurrently to avoid N+1 sequential database queries
+    comments_tasks = [
+        db.query_documents(
+            'post_comments',
+            filters=[('post_id', '==', post.get('id'))],
+            limit=200,
+        )
+        for post in paged_posts
+    ]
+    all_posts_comments = await asyncio.gather(*comments_tasks)
+
     normalized = []
-    for post in paged_posts:
+    for post, top_comments in zip(paged_posts, all_posts_comments):
         latest_author = authors_by_id.get(post.get('user_id'))
         if latest_author:
             post['user_photo'] = latest_author.get('photo')
@@ -4097,11 +4108,6 @@ async def get_posts_by_hashtag(hashtag: str, limit: int = 20, offset: int = 0, t
         post['views_count'] = post.get('views_count', 0)
         post['liked_by_me'] = user_id in liked_by
 
-        top_comments = await db.query_documents(
-            'post_comments',
-            filters=[('post_id', '==', post.get('id'))],
-            limit=200,
-        )
         top_comments = [c for c in top_comments if c.get('user_id') not in blocked_user_ids]
         top_comments.sort(key=_comment_created_at_sort_key, reverse=True)
         post['top_comments'] = top_comments[:5]
@@ -7362,6 +7368,19 @@ async def get_circles(token_data: dict = Depends(verify_token)):
     if user_circle_ids:
         try:
             fetched_circles = await db.get_documents_batch('circles', user_circle_ids)
+            
+            # Pre-collect all member IDs across all fetched circles to fetch them in a single batch
+            all_member_ids = set()
+            for circle in fetched_circles:
+                if circle:
+                    for member_id in circle.get('members', []):
+                        if member_id != user_id:
+                            all_member_ids.add(member_id)
+
+            # Fetch all user details in a single batch query
+            users_data = await db.get_documents_batch('users', list(all_member_ids))
+            users_by_id = {u['id']: u for u in users_data if u and 'id' in u}
+
             for circle in fetched_circles:
                 if circle:
                     cid = circle['id']
@@ -7376,7 +7395,7 @@ async def get_circles(token_data: dict = Depends(verify_token)):
                     for member_id in circle.get('members', []):
                         if member_id == user_id:
                             continue
-                        member_doc = await db.get_document('users', member_id)
+                        member_doc = users_by_id.get(member_id)
                         if member_doc and member_doc.get('name'):
                             member_names.append(member_doc['name'])
 
@@ -7504,15 +7523,17 @@ async def get_circle(circle_id: str, token_data: dict = Depends(verify_token)):
     
     # Get member details
     members_info = []
-    for member_id in circle.get('members', []):
-        member = await db.get_document('users', member_id)
-        if member:
-            members_info.append({
-                "user_id": member_id,
-                "name": member['name'],
-                "sl_id": member.get('sl_id'),
-                "photo": member.get('photo')
-            })
+    member_ids = circle.get('members', [])
+    if member_ids:
+        members = await db.get_documents_batch('users', member_ids)
+        for member in members:
+            if member:
+                members_info.append({
+                    "user_id": member['id'],
+                    "name": member['name'],
+                    "sl_id": member.get('sl_id'),
+                    "photo": member.get('photo')
+                })
     
     return {
         "id": circle['id'],
@@ -8220,7 +8241,7 @@ async def generate_user_aadhaar_otp(data: dict = Body(...), token_data: dict = D
 
     if not use_mock:
         try:
-            headers = _get_sandbox_headers()
+            headers = await _get_sandbox_headers()
             sandbox_url = f"{os.getenv('SANDBOX_BASE_URL', 'https://api.sandbox.co.in').rstrip('/')}/kyc/aadhaar/okyc/otp"
             import asyncio; resp = await asyncio.to_thread(requests.post, sandbox_url, json=payload, headers=headers, timeout=30)
             resp_data = resp.json() if resp.content else {}
@@ -8302,7 +8323,7 @@ async def verify_user_aadhaar_otp(data: dict = Body(...), token_data: dict = Dep
             "otp": otp,
         }
         try:
-            headers = _get_sandbox_headers()
+            headers = await _get_sandbox_headers()
             sandbox_url = f"{os.getenv('SANDBOX_BASE_URL', 'https://api.sandbox.co.in').rstrip('/')}/kyc/aadhaar/okyc/otp/verify"
             import asyncio; resp = await asyncio.to_thread(requests.post, sandbox_url, json=payload, headers=headers, timeout=30)
             resp_data = resp.json() if resp.content else {}
@@ -8864,34 +8885,53 @@ async def get_reports(
         reports.sort(key=lambda item: _clean_datetime(item.get('created_at')), reverse=True)
         reports = reports[:max(1, min(limit, 300))]
 
+    # Pre-collect missing post and comment IDs across reports to fetch in batch
+    missing_post_ids = set()
+    missing_comment_ids = set()
+    for r in reports:
+        if not r.get('snapshot') and r.get('content_id'):
+            if r.get('content_type') == 'post':
+                missing_post_ids.add(r.get('content_id'))
+            elif r.get('content_type') == 'comment':
+                missing_comment_ids.add(r.get('content_id'))
+
+    posts_by_id = {}
+    comments_by_id = {}
+    if missing_post_ids:
+        try:
+            fetched_posts = await db.get_documents_batch('posts', list(missing_post_ids))
+            posts_by_id = {p['id']: p for p in fetched_posts if p and 'id' in p}
+        except Exception as e:
+            logger.warning("Failed to batch fetch posts for reports: %s", e)
+    if missing_comment_ids:
+        try:
+            fetched_comments = await db.get_documents_batch('post_comments', list(missing_comment_ids))
+            comments_by_id = {c['id']: c for c in fetched_comments if c and 'id' in c}
+        except Exception as e:
+            logger.warning("Failed to batch fetch comments for reports: %s", e)
+
     for r in reports:
         if not r.get('snapshot') and r.get('content_type') == 'post' and r.get('content_id'):
-            try:
-                post = await db.get_document('posts', r.get('content_id'))
-                if post:
-                    r['snapshot'] = {
-                        'post_id': r.get('content_id'),
-                        'caption': post.get('caption') or '',
-                        'media_url': post.get('media_url'),
-                        'media_type': post.get('media_type'),
-                        'post_user_id': post.get('user_id'),
-                        'post_username': post.get('username'),
-                    }
-            except Exception as e:
-                logger.warning("Failed to populate dynamic snapshot for reports: %s", e)
+            post = posts_by_id.get(r.get('content_id'))
+            if post:
+                r['snapshot'] = {
+                    'post_id': r.get('content_id'),
+                    'caption': post.get('caption') or '',
+                    'media_url': post.get('media_url'),
+                    'media_type': post.get('media_type'),
+                    'post_user_id': post.get('user_id'),
+                    'post_username': post.get('username'),
+                }
         elif not r.get('snapshot') and r.get('content_type') == 'comment' and r.get('content_id'):
-            try:
-                comment = await db.get_document('post_comments', r.get('content_id'))
-                if comment:
-                    r['snapshot'] = {
-                        'comment_id': r.get('content_id'),
-                        'text': comment.get('text') or '',
-                        'comment_user_id': comment.get('user_id'),
-                        'comment_username': comment.get('username'),
-                        'post_id': comment.get('post_id'),
-                    }
-            except Exception as e:
-                logger.warning("Failed to populate dynamic comment snapshot for reports: %s", e)
+            comment = comments_by_id.get(r.get('content_id'))
+            if comment:
+                r['snapshot'] = {
+                    'comment_id': r.get('content_id'),
+                    'text': comment.get('text') or '',
+                    'comment_user_id': comment.get('user_id'),
+                    'comment_username': comment.get('username'),
+                    'post_id': comment.get('post_id'),
+                }
 
     try:
         mod_reports = await db.query_documents(
@@ -8910,6 +8950,34 @@ async def get_reports(
         mod_reports.sort(key=lambda item: _clean_datetime(item.get('createdAt')), reverse=True)
         mod_reports = mod_reports[:max(1, min(limit, 300))]
 
+    # Pre-collect missing post and comment IDs across moderation reports to fetch in batch
+    mod_post_ids = set()
+    mod_comment_ids = set()
+    for r in mod_reports:
+        content_type = r.get('contentType')
+        content_id = r.get('contentId')
+        snapshot = r.get('snapshot') or {}
+        if not snapshot and content_id:
+            if content_type == 'post':
+                mod_post_ids.add(content_id)
+            elif content_type == 'comment':
+                mod_comment_ids.add(content_id)
+
+    mod_posts_by_id = {}
+    mod_comments_by_id = {}
+    if mod_post_ids:
+        try:
+            fetched_mod_posts = await db.get_documents_batch('posts', list(mod_post_ids))
+            mod_posts_by_id = {p['id']: p for p in fetched_mod_posts if p and 'id' in p}
+        except Exception as e:
+            logger.warning("Failed to batch fetch posts for moderation reports: %s", e)
+    if mod_comment_ids:
+        try:
+            fetched_mod_comments = await db.get_documents_batch('post_comments', list(mod_comment_ids))
+            mod_comments_by_id = {c['id']: c for c in fetched_mod_comments if c and 'id' in c}
+        except Exception as e:
+            logger.warning("Failed to batch fetch comments for moderation reports: %s", e)
+
     standardized_mod = []
     for r in mod_reports:
         created_at_val = r.get('createdAt')
@@ -8926,32 +8994,26 @@ async def get_reports(
         content_id = r.get('contentId')
         snapshot = r.get('snapshot') or {}
         if not snapshot and content_type == 'post' and content_id:
-            try:
-                post = await db.get_document('posts', content_id)
-                if post:
-                    snapshot = {
-                        'post_id': content_id,
-                        'caption': post.get('caption') or '',
-                        'media_url': post.get('media_url'),
-                        'media_type': post.get('media_type'),
-                        'post_user_id': post.get('user_id'),
-                        'post_username': post.get('username'),
-                    }
-            except Exception as e:
-                logger.warning("Failed to populate dynamic snapshot for moderation_reports: %s", e)
+            post = mod_posts_by_id.get(content_id)
+            if post:
+                snapshot = {
+                    'post_id': content_id,
+                    'caption': post.get('caption') or '',
+                    'media_url': post.get('media_url'),
+                    'media_type': post.get('media_type'),
+                    'post_user_id': post.get('user_id'),
+                    'post_username': post.get('username'),
+                }
         elif not snapshot and content_type == 'comment' and content_id:
-            try:
-                comment = await db.get_document('post_comments', content_id)
-                if comment:
-                    snapshot = {
-                        'comment_id': content_id,
-                        'text': comment.get('text') or '',
-                        'comment_user_id': comment.get('user_id'),
-                        'comment_username': comment.get('username'),
-                        'post_id': comment.get('post_id'),
-                    }
-            except Exception as e:
-                logger.warning("Failed to populate dynamic comment snapshot: %s", e)
+            comment = mod_comments_by_id.get(content_id)
+            if comment:
+                snapshot = {
+                    'comment_id': content_id,
+                    'text': comment.get('text') or '',
+                    'comment_user_id': comment.get('user_id'),
+                    'comment_username': comment.get('username'),
+                    'post_id': comment.get('post_id'),
+                }
 
         standardized_mod.append({
             'id': r.get('id'),
@@ -11220,7 +11282,7 @@ async def extract_user_kyc_text_from_image(
         raise HTTPException(status_code=500, detail=f"Vision extraction failed (library path): {str(exc)}")
 
 
-def _get_sandbox_headers() -> dict:
+async def _get_sandbox_headers() -> dict:
     sandbox_api_key = os.getenv("SANDBOX_API_KEY")
     sandbox_auth = os.getenv("SANDBOX_AUTHORIZATION") or os.getenv("SANDBOX_ACCESS_TOKEN")
     sandbox_api_secret = os.getenv("SANDBOX_API_SECRET")
@@ -11250,7 +11312,9 @@ def _get_sandbox_headers() -> dict:
                 "x-api-version": str(sandbox_api_version),
             }
             try:
-                auth_resp = requests.post(auth_url, headers=auth_headers, timeout=20)
+                def _auth():
+                    return requests.post(auth_url, headers=auth_headers, timeout=20)
+                auth_resp = await asyncio.to_thread(_auth)
                 auth_data = auth_resp.json() if auth_resp.content else {}
             except Exception as exc:
                 raise HTTPException(status_code=502, detail=f"Sandbox authenticate failed: {str(exc)}")
@@ -11321,7 +11385,7 @@ async def generate_vendor_aadhaar_otp(vendor_id: str, data: dict = Body(...), to
 
     if not use_mock:
         try:
-            headers = _get_sandbox_headers()
+            headers = await _get_sandbox_headers()
             sandbox_url = f"{os.getenv('SANDBOX_BASE_URL', 'https://api.sandbox.co.in').rstrip('/')}/kyc/aadhaar/okyc/otp"
             import asyncio; resp = await asyncio.to_thread(requests.post, sandbox_url, json=payload, headers=headers, timeout=30)
             resp_data = resp.json() if resp.content else {}
@@ -11393,7 +11457,7 @@ async def verify_vendor_aadhaar_otp(vendor_id: str, data: dict = Body(...), toke
             "otp": otp,
         }
         try:
-            headers = _get_sandbox_headers()
+            headers = await _get_sandbox_headers()
             sandbox_url = f"{os.getenv('SANDBOX_BASE_URL', 'https://api.sandbox.co.in').rstrip('/')}/kyc/aadhaar/okyc/otp/verify"
             import asyncio; resp = await asyncio.to_thread(requests.post, sandbox_url, json=payload, headers=headers, timeout=30)
             resp_data = resp.json() if resp.content else {}
@@ -11973,9 +12037,14 @@ async def create_community_request(data: CommunityRequestCreate, token_data: dic
     resolved_community_id = data.community_id
     if not resolved_community_id:
         user_community_ids = user.get('communities', []) or []
+        
+        # Batch-fetch all user communities in a single call to avoid N+1 sequential DB queries
+        fetched_comms = await db.get_documents_batch('communities', user_community_ids) if user_community_ids else []
+        comms_by_id = {c['id']: c for c in fetched_comms if c and 'id' in c}
+
         city_comm_id = None
         for comm_id in user_community_ids:
-            comm = await db.get_document('communities', comm_id)
+            comm = comms_by_id.get(comm_id)
             if comm and comm.get('type') == 'city':
                 city_comm_id = comm_id
                 break
@@ -11994,7 +12063,7 @@ async def create_community_request(data: CommunityRequestCreate, token_data: dic
             best_match_id = None
             fallback_match_id = None
             for comm_id in user_community_ids:
-                comm = await db.get_document('communities', comm_id)
+                comm = comms_by_id.get(comm_id)
                 if not comm:
                     continue
                 comm_type = comm.get('type')
@@ -12016,7 +12085,7 @@ async def create_community_request(data: CommunityRequestCreate, token_data: dic
     if not resolved_community_id:
         user_community_ids = user.get('communities', []) or []
         for comm_id in user_community_ids:
-            comm = await db.get_document('communities', comm_id)
+            comm = comms_by_id.get(comm_id)
             if comm and comm.get('type') == 'city':
                 resolved_community_id = comm_id
                 break
@@ -12432,7 +12501,7 @@ async def delete_community_request(request_id: str, token_data: dict = Depends(v
 # =================== SOS EMERGENCY SYSTEM ===================
 
 
-async def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371  # Earth radius in km
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -12493,7 +12562,7 @@ async def _get_nearest_users(
         except (ValueError, TypeError):
             continue
             
-        distance = await _haversine_distance(latitude, longitude, user_lat, user_lng)
+        distance = _haversine_distance(latitude, longitude, user_lat, user_lng)
         if distance <= max_distance_km:
             candidates.append((distance, user.get('id')))
 
@@ -12604,7 +12673,8 @@ async def _escalate_sos_notifications(sos_id: str, all_user_ids: list):
 async def _save_bulk_notifications(db, user_ids: list, title: str, body: str, notification_type: str, data: dict):
     if not user_ids:
         return
-    for uid in user_ids:
+
+    async def _save_single_notification(uid):
         try:
             notification_data = {
                 'user_id': uid,
@@ -12626,6 +12696,9 @@ async def _save_bulk_notifications(db, user_ids: list, title: str, body: str, no
                 logger.warning(f"Failed to emit socket notification for user {uid}: {se}")
         except Exception as e:
             logger.error(f"Failed to save bulk notification for user {uid}: {e}")
+
+    # Process all notifications in parallel to avoid sequential database write and socket emission delays
+    await asyncio.gather(*[_save_single_notification(uid) for uid in user_ids])
 
 
 @api_router.post("/sos")
@@ -12716,7 +12789,7 @@ async def create_sos_alert(data: SOSCreate, token_data: dict = Depends(verify_to
                     continue
             except:
                 continue
-            dist = await _haversine_distance(data.latitude, data.longitude, u_lat, u_lng)
+            dist = _haversine_distance(data.latitude, data.longitude, u_lat, u_lng)
             if dist <= 10.0:
                 expanded_users.append((dist, uid))
         expanded_users.sort(key=lambda x: x[0])
@@ -13849,13 +13922,18 @@ async def pull_sync_changes(last_pulled_at: float = 0, schema_version: int = 1, 
                 "updated_at": updated_ts
             })
         
-        # Add posts from blocked users to deleted sync so they are cleaned up locally
-        for b_uid in blocked_user_ids:
-            blocked_posts = await db.query_documents('posts', filters=[('user_id', '==', b_uid)])
-            for bp in blocked_posts:
-                bp_id = bp.get('id')
-                if bp_id:
-                    changes["feeds"]["deleted"].append(bp_id)
+        # Add posts from blocked users to deleted sync so they are cleaned up locally (optimized with parallel query gather)
+        if blocked_user_ids:
+            blocked_tasks = [
+                db.query_documents('posts', filters=[('user_id', '==', b_uid)])
+                for b_uid in blocked_user_ids
+            ]
+            all_blocked_posts = await asyncio.gather(*blocked_tasks)
+            for blocked_posts in all_blocked_posts:
+                for bp in blocked_posts:
+                    bp_id = bp.get('id')
+                    if bp_id:
+                        changes["feeds"]["deleted"].append(bp_id)
     except Exception as e:
         logger.error("Error pulling feeds in sync: %s", e)
 

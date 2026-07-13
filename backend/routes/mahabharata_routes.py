@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -60,7 +61,7 @@ def _load_mahabharata_book(book_number: int) -> List[Dict[str, Any]]:
 
 @router.get("/book/{book_number}")
 async def get_mahabharata_book(book_number: int):
-    verses = _load_mahabharata_book(book_number)
+    verses = await asyncio.to_thread(_load_mahabharata_book, book_number)
     return {
         "book": "mahabharata",
         "chapter": book_number,
@@ -70,8 +71,19 @@ async def get_mahabharata_book(book_number: int):
 
 
 @router.get("/all")
-async def get_mahabharata_all():
-    chapters = {}
-    for i in range(1, 19):
-        chapters[i] = _load_mahabharata_book(i)
+async def get_mahabharata_all(summary: bool = True):
+    results = await asyncio.gather(*(
+        asyncio.to_thread(_load_mahabharata_book, i) for i in range(1, 19)
+    ))
+    if summary:
+        chapters = {
+            i: {
+                "chapter": i,
+                "total_verses": len(res),
+                "verses_summary": f"Book {i} contains {len(res)} verses."
+            }
+            for i, res in enumerate(results, start=1)
+        }
+    else:
+        chapters = {i: res for i, res in enumerate(results, start=1)}
     return {"book": "mahabharata", "chapters": chapters}

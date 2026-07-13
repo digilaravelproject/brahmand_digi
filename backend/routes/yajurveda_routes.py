@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -92,7 +93,7 @@ def _find_yajurveda_chapter(chapter_number: int) -> List[Dict[str, Any]]:
 
 @router.get("/chapter/{chapter_number}")
 async def get_yajurveda_chapter(chapter_number: int):
-    verses = _find_yajurveda_chapter(chapter_number)
+    verses = await asyncio.to_thread(_find_yajurveda_chapter, chapter_number)
     return {
         "book": "yajurveda",
         "chapter": chapter_number,
@@ -102,9 +103,11 @@ async def get_yajurveda_chapter(chapter_number: int):
 
 
 @router.get("/all")
-async def get_yajurveda_all():
-    kanva = _load_yajurveda_kanva()
-    madhyadina = _load_yajurveda_madhyadina()
+async def get_yajurveda_all(summary: bool = True):
+    kanva, madhyadina = await asyncio.gather(
+        asyncio.to_thread(_load_yajurveda_kanva),
+        asyncio.to_thread(_load_yajurveda_madhyadina)
+    )
     all_rows = kanva + madhyadina
     chapters: Dict[int, list] = {}
     for row in all_rows:
@@ -115,4 +118,14 @@ async def get_yajurveda_all():
     for ch in chapters:
         for idx, v in enumerate(chapters[ch]):
             v["verse"] = idx + 1
+    if summary:
+        chapters_summary = {
+            ch: {
+                "chapter": ch,
+                "total_verses": len(verses),
+                "verses_summary": f"Chapter {ch} contains {len(verses)} verses."
+            }
+            for ch, verses in chapters.items()
+        }
+        return {"book": "yajurveda", "chapters": chapters_summary}
     return {"book": "yajurveda", "chapters": chapters}

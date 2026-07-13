@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -55,7 +56,7 @@ def _load_bhagavad_gita_chapter(chapter_number: int) -> List[Dict[str, Any]]:
 
 @router.get("/chapter/{chapter_number}")
 async def get_bhagavad_gita_chapter(chapter_number: int):
-    verses = _load_bhagavad_gita_chapter(chapter_number)
+    verses = await asyncio.to_thread(_load_bhagavad_gita_chapter, chapter_number)
     return {
         "book": "bhagavad-gita",
         "chapter": chapter_number,
@@ -65,9 +66,20 @@ async def get_bhagavad_gita_chapter(chapter_number: int):
 
 
 @router.get("/all")
-async def get_bhagavad_gita_all():
-    # ponytail: load all 18 chapters in one call, avoids N round-trips
-    chapters = {}
-    for i in range(1, 19):
-        chapters[i] = _load_bhagavad_gita_chapter(i)
+async def get_bhagavad_gita_all(summary: bool = True):
+    # ponytail: load all 18 chapters in one call concurrently, avoids blocking and sequential lag
+    results = await asyncio.gather(*(
+        asyncio.to_thread(_load_bhagavad_gita_chapter, i) for i in range(1, 19)
+    ))
+    if summary:
+        chapters = {
+            i: {
+                "chapter": i,
+                "total_verses": len(res),
+                "verses_summary": f"Chapter {i} contains {len(res)} verses."
+            }
+            for i, res in enumerate(results, start=1)
+        }
+    else:
+        chapters = {i: res for i, res in enumerate(results, start=1)}
     return {"book": "bhagavad-gita", "chapters": chapters}

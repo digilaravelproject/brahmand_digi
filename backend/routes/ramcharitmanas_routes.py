@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -77,7 +78,7 @@ def _load_ramcharitmanas_kand(kand_number: int) -> List[Dict[str, Any]]:
 
 @router.get("/chapter/{kand_number}")
 async def get_ramcharitmanas_kand(kand_number: int):
-    verses = _load_ramcharitmanas_kand(kand_number)
+    verses = await asyncio.to_thread(_load_ramcharitmanas_kand, kand_number)
     return {
         "book": "ramcharitmanas",
         "chapter": kand_number,
@@ -87,8 +88,19 @@ async def get_ramcharitmanas_kand(kand_number: int):
 
 
 @router.get("/all")
-async def get_ramcharitmanas_all():
-    chapters = {}
-    for i in range(1, 8):
-        chapters[i] = _load_ramcharitmanas_kand(i)
+async def get_ramcharitmanas_all(summary: bool = True):
+    results = await asyncio.gather(*(
+        asyncio.to_thread(_load_ramcharitmanas_kand, i) for i in range(1, 8)
+    ))
+    if summary:
+        chapters = {
+            i: {
+                "chapter": i,
+                "total_verses": len(res),
+                "verses_summary": f"Kand {i} contains {len(res)} verses."
+            }
+            for i, res in enumerate(results, start=1)
+        }
+    else:
+        chapters = {i: res for i, res in enumerate(results, start=1)}
     return {"book": "ramcharitmanas", "chapters": chapters}

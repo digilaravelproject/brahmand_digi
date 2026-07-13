@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -38,7 +39,7 @@ def _load_upanishads() -> List[Dict[str, Any]]:
 
 @router.get("/chapter/{chapter_number}")
 async def get_upanishad_chapter(chapter_number: int):
-    all_verses = _load_upanishads()
+    all_verses = await asyncio.to_thread(_load_upanishads)
     chapter_verses = [v for v in all_verses if v.get("chapter") == chapter_number]
     
     if not chapter_verses:
@@ -53,11 +54,21 @@ async def get_upanishad_chapter(chapter_number: int):
 
 
 @router.get("/all")
-async def get_upanishads_all():
-    all_verses = _load_upanishads()
+async def get_upanishads_all(summary: bool = True):
+    all_verses = await asyncio.to_thread(_load_upanishads)
     chapters: Dict[int, list] = {}
     for v in all_verses:
         ch = v.get("chapter")
         if isinstance(ch, int):
             chapters.setdefault(ch, []).append(v)
+    if summary:
+        chapters_summary = {
+            ch: {
+                "chapter": ch,
+                "total_verses": len(verses),
+                "verses_summary": f"Chapter {ch} contains {len(verses)} verses."
+            }
+            for ch, verses in chapters.items()
+        }
+        return {"book": "upanishads", "chapters": chapters_summary}
     return {"book": "upanishads", "chapters": chapters}

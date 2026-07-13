@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -60,7 +61,7 @@ def _load_rigveda_mandala(mandala_number: int) -> List[Dict[str, Any]]:
 
 @router.get("/chapter/{mandala_number}")
 async def get_rigveda_mandala(mandala_number: int):
-    verses = _load_rigveda_mandala(mandala_number)
+    verses = await asyncio.to_thread(_load_rigveda_mandala, mandala_number)
     return {
         "book": "rigveda",
         "chapter": mandala_number,
@@ -70,8 +71,19 @@ async def get_rigveda_mandala(mandala_number: int):
 
 
 @router.get("/all")
-async def get_rigveda_all():
-    chapters = {}
-    for i in range(1, 11):
-        chapters[i] = _load_rigveda_mandala(i)
+async def get_rigveda_all(summary: bool = True):
+    results = await asyncio.gather(*(
+        asyncio.to_thread(_load_rigveda_mandala, i) for i in range(1, 11)
+    ))
+    if summary:
+        chapters = {
+            i: {
+                "chapter": i,
+                "total_verses": len(res),
+                "verses_summary": f"Mandala {i} contains {len(res)} verses."
+            }
+            for i, res in enumerate(results, start=1)
+        }
+    else:
+        chapters = {i: res for i, res in enumerate(results, start=1)}
     return {"book": "rigveda", "chapters": chapters}
