@@ -14,6 +14,8 @@ BHAGAVAD_GITA_CHAPTER_DATA_DIR = (
 )
 
 _bhagavad_gita_chapter_cache: Dict[int, List[Dict[str, Any]]] = {}
+_bhagavad_gita_chapters_summary_cache = None
+_bhagavad_gita_chapters_full_cache = None
 
 
 def _load_bhagavad_gita_chapter(chapter_number: int) -> List[Dict[str, Any]]:
@@ -67,7 +69,12 @@ async def get_bhagavad_gita_chapter(chapter_number: int):
 
 @router.get("/all")
 async def get_bhagavad_gita_all(summary: bool = True):
-    # ponytail: load all 18 chapters in one call concurrently, avoids blocking and sequential lag
+    global _bhagavad_gita_chapters_summary_cache, _bhagavad_gita_chapters_full_cache
+    if summary and _bhagavad_gita_chapters_summary_cache is not None:
+        return _bhagavad_gita_chapters_summary_cache
+    if not summary and _bhagavad_gita_chapters_full_cache is not None:
+        return _bhagavad_gita_chapters_full_cache
+
     results = await asyncio.gather(*(
         asyncio.to_thread(_load_bhagavad_gita_chapter, i) for i in range(1, 19)
     ))
@@ -82,4 +89,11 @@ async def get_bhagavad_gita_all(summary: bool = True):
         }
     else:
         chapters = {i: res for i, res in enumerate(results, start=1)}
-    return {"book": "bhagavad-gita", "chapters": chapters}
+    
+    response_data = {"book": "bhagavad-gita", "chapters": chapters}
+    if summary:
+        _bhagavad_gita_chapters_summary_cache = response_data
+    else:
+        _bhagavad_gita_chapters_full_cache = response_data
+        
+    return response_data
