@@ -191,6 +191,14 @@ async def lifespan(app: FastAPI):
     """Application lifespan"""
     logger.info("Starting Sanatan Lok API v2.2.0 (Firestore)...")
     
+    # Set default event loop executor to ThreadPoolExecutor with 1000 workers
+    # to support highly concurrent blocking sync Firestore operations
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1000))
+    logger.info("Default ThreadPoolExecutor max_workers set to 1000")
+    
     # Initialize Firebase with Firestore
     await firebase_manager.initialize()
     
@@ -2155,13 +2163,15 @@ async def setup_dual_location(locations: DualLocationSetup, token_data: dict = D
     non_location_community_ids = []
     old_location_community_ids = []
     
-    for cid in current_communities:
-        comm = await db.get_document('communities', cid)
-        if comm:
-            if comm.get('type') in ['city', 'state', 'country', 'home_area', 'office_area']:
-                old_location_community_ids.append(cid)
-            else:
-                non_location_community_ids.append(cid)
+    if current_communities:
+        comm_docs = await db.get_documents_batch('communities', list(current_communities))
+        for comm in comm_docs:
+            if comm:
+                cid = comm['id']
+                if comm.get('type') in ['city', 'state', 'country', 'home_area', 'office_area']:
+                    old_location_community_ids.append(cid)
+                else:
+                    non_location_community_ids.append(cid)
                 
     # Remove user from the old location-based communities in the communities collection
     for cid in old_location_community_ids:
@@ -2606,26 +2616,30 @@ async def get_blocked_users_endpoint(token_data: dict = Depends(verify_token)):
         # Query blocks where blockerUid is the current user
         blocks = await db.query_documents('user_blocks', filters=[('blockerUid', '==', current_user_id)])
         blocked_users = []
-        for b in blocks:
-            blocked_uid = b.get('blockedUid')
-            if blocked_uid:
-                user_doc = await db.get_document('users', blocked_uid)
-                if user_doc:
-                    blocked_users.append({
-                        'id': user_doc.get('id'),
-                        'name': user_doc.get('name', 'Unknown User'),
-                        'username': user_doc.get('username', ''),
-                        'sl_id': user_doc.get('sl_id', ''),
-                        'photo_url': user_doc.get('photo_url', '') or user_doc.get('photo', '')
-                    })
-                else:
-                    blocked_users.append({
-                        'id': blocked_uid,
-                        'name': 'Unknown User',
-                        'username': 'unknown',
-                        'sl_id': '',
-                        'photo_url': ''
-                    })
+        blocked_uids = [b.get('blockedUid') for b in blocks if b.get('blockedUid')]
+        if blocked_uids:
+            user_docs = await db.get_documents_batch('users', blocked_uids)
+            user_map = {u['id']: u for u in user_docs if u}
+            for b in blocks:
+                blocked_uid = b.get('blockedUid')
+                if blocked_uid:
+                    user_doc = user_map.get(blocked_uid)
+                    if user_doc:
+                        blocked_users.append({
+                            'id': user_doc.get('id'),
+                            'name': user_doc.get('name', 'Unknown User'),
+                            'username': user_doc.get('username', ''),
+                            'sl_id': user_doc.get('sl_id', ''),
+                            'photo_url': user_doc.get('photo_url', '') or user_doc.get('photo', '')
+                        })
+                    else:
+                        blocked_users.append({
+                            'id': blocked_uid,
+                            'name': 'Unknown User',
+                            'username': 'unknown',
+                            'sl_id': '',
+                            'photo_url': ''
+                        })
         return blocked_users
     except Exception as e:
         logger.error(f"Error fetching blocked users: {e}")
@@ -4065,11 +4079,14 @@ async def get_posts_by_hashtag(hashtag: str, limit: int = 20, offset: int = 0, t
 
     post_author_ids = list({post.get('user_id') for post in visible_posts if post.get('user_id')})
     authors_by_id = {}
-    for author_id in post_author_ids:
+    if post_author_ids:
         try:
-            authors_by_id[author_id] = await db.get_document('users', author_id)
-        except Exception:
-            authors_by_id[author_id] = None
+            author_docs = await db.get_documents_batch('users', post_author_ids)
+            for u in author_docs:
+                if u:
+                    authors_by_id[u['id']] = u
+        except Exception as e:
+            logger.error(f"Error batch fetching post authors: {e}")
 
     def _comment_created_at_sort_key(item: dict):
         value = item.get('created_at')
@@ -8035,24 +8052,17 @@ async def get_circle_messages(circle_id: str, limit: int = 50, token_data: dict 
 
 @api_router.get("/temples")
 async def get_temples(token_data: dict = Depends(verify_token)):
-    db = await get_db()
-    return await db.query_documents('temples', limit=100)
+    from services.temple_service import TempleService
+    user_id = token_data.get("user_id")
+    return await TempleService.get_temples(user_id)
 
 
 @api_router.get("/temples/nearby")
 async def get_nearby_temples(lat: float = None, lng: float = None, token_data: dict = Depends(verify_token)):
     """Get temples, optionally filtered by location"""
-    db = await get_db()
-    temples = await db.query_documents('temples', limit=100)
-    
-    # Add is_following status for each temple
-    user_id = token_data["user_id"]
-    for temple in temples:
-        followers = temple.get('followers', [])
-        temple['is_following'] = user_id in followers
-        temple['follower_count'] = len(followers)
-    
-    return temples
+    from services.temple_service import TempleService
+    user_id = token_data.get("user_id")
+    return await TempleService.get_temples(user_id)
 
 
 @api_router.get("/temples/{temple_id}")

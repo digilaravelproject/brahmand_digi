@@ -25,6 +25,8 @@ KAND_FILE_PREFIXES = {
 }
 
 _ramcharitmanas_kand_cache: Dict[int, List[Dict[str, Any]]] = {}
+_ramcharitmanas_all_summary_cache = None
+_ramcharitmanas_all_full_cache = None
 
 def _load_ramcharitmanas_kand(kand_number: int) -> List[Dict[str, Any]]:
     if kand_number in _ramcharitmanas_kand_cache:
@@ -89,6 +91,12 @@ async def get_ramcharitmanas_kand(kand_number: int):
 
 @router.get("/all")
 async def get_ramcharitmanas_all(summary: bool = True):
+    global _ramcharitmanas_all_summary_cache, _ramcharitmanas_all_full_cache
+    if summary and _ramcharitmanas_all_summary_cache is not None:
+        return _ramcharitmanas_all_summary_cache
+    if not summary and _ramcharitmanas_all_full_cache is not None:
+        return _ramcharitmanas_all_full_cache
+
     results = await asyncio.gather(*(
         asyncio.to_thread(_load_ramcharitmanas_kand, i) for i in range(1, 8)
     ))
@@ -103,4 +111,10 @@ async def get_ramcharitmanas_all(summary: bool = True):
         }
     else:
         chapters = {i: res for i, res in enumerate(results, start=1)}
-    return {"book": "ramcharitmanas", "chapters": chapters}
+        
+    response_data = {"book": "ramcharitmanas", "chapters": chapters}
+    if summary:
+        _ramcharitmanas_all_summary_cache = response_data
+    else:
+        _ramcharitmanas_all_full_cache = response_data
+    return response_data

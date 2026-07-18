@@ -14,6 +14,8 @@ RIGVEDA_DATA_DIR = (
 )
 
 _rigveda_mandala_cache: Dict[int, List[Dict[str, Any]]] = {}
+_rigveda_all_summary_cache = None
+_rigveda_all_full_cache = None
 
 
 def _load_rigveda_mandala(mandala_number: int) -> List[Dict[str, Any]]:
@@ -72,6 +74,12 @@ async def get_rigveda_mandala(mandala_number: int):
 
 @router.get("/all")
 async def get_rigveda_all(summary: bool = True):
+    global _rigveda_all_summary_cache, _rigveda_all_full_cache
+    if summary and _rigveda_all_summary_cache is not None:
+        return _rigveda_all_summary_cache
+    if not summary and _rigveda_all_full_cache is not None:
+        return _rigveda_all_full_cache
+
     results = await asyncio.gather(*(
         asyncio.to_thread(_load_rigveda_mandala, i) for i in range(1, 11)
     ))
@@ -86,4 +94,10 @@ async def get_rigveda_all(summary: bool = True):
         }
     else:
         chapters = {i: res for i, res in enumerate(results, start=1)}
-    return {"book": "rigveda", "chapters": chapters}
+        
+    response_data = {"book": "rigveda", "chapters": chapters}
+    if summary:
+        _rigveda_all_summary_cache = response_data
+    else:
+        _rigveda_all_full_cache = response_data
+    return response_data

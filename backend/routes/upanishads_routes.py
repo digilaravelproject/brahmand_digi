@@ -14,6 +14,8 @@ UPANISHADS_DATA_FILE = (
 )
 
 _upanishads_cache: List[Dict[str, Any]] = []
+_upanishads_all_summary_cache = None
+_upanishads_all_full_cache = None
 
 
 def _load_upanishads() -> List[Dict[str, Any]]:
@@ -55,6 +57,12 @@ async def get_upanishad_chapter(chapter_number: int):
 
 @router.get("/all")
 async def get_upanishads_all(summary: bool = True):
+    global _upanishads_all_summary_cache, _upanishads_all_full_cache
+    if summary and _upanishads_all_summary_cache is not None:
+        return _upanishads_all_summary_cache
+    if not summary and _upanishads_all_full_cache is not None:
+        return _upanishads_all_full_cache
+
     all_verses = await asyncio.to_thread(_load_upanishads)
     chapters: Dict[int, list] = {}
     for v in all_verses:
@@ -70,5 +78,12 @@ async def get_upanishads_all(summary: bool = True):
             }
             for ch, verses in chapters.items()
         }
-        return {"book": "upanishads", "chapters": chapters_summary}
-    return {"book": "upanishads", "chapters": chapters}
+        response_data = {"book": "upanishads", "chapters": chapters_summary}
+    else:
+        response_data = {"book": "upanishads", "chapters": chapters}
+        
+    if summary:
+        _upanishads_all_summary_cache = response_data
+    else:
+        _upanishads_all_full_cache = response_data
+    return response_data

@@ -14,6 +14,8 @@ MAHABHARATA_DATA_DIR = (
 )
 
 _mahabharata_book_cache: Dict[int, List[Dict[str, Any]]] = {}
+_mahabharata_all_summary_cache = None
+_mahabharata_all_full_cache = None
 
 
 def _load_mahabharata_book(book_number: int) -> List[Dict[str, Any]]:
@@ -72,6 +74,12 @@ async def get_mahabharata_book(book_number: int):
 
 @router.get("/all")
 async def get_mahabharata_all(summary: bool = True):
+    global _mahabharata_all_summary_cache, _mahabharata_all_full_cache
+    if summary and _mahabharata_all_summary_cache is not None:
+        return _mahabharata_all_summary_cache
+    if not summary and _mahabharata_all_full_cache is not None:
+        return _mahabharata_all_full_cache
+
     results = await asyncio.gather(*(
         asyncio.to_thread(_load_mahabharata_book, i) for i in range(1, 19)
     ))
@@ -86,4 +94,10 @@ async def get_mahabharata_all(summary: bool = True):
         }
     else:
         chapters = {i: res for i, res in enumerate(results, start=1)}
-    return {"book": "mahabharata", "chapters": chapters}
+        
+    response_data = {"book": "mahabharata", "chapters": chapters}
+    if summary:
+        _mahabharata_all_summary_cache = response_data
+    else:
+        _mahabharata_all_full_cache = response_data
+    return response_data

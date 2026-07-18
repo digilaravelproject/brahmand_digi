@@ -88,8 +88,8 @@ class FirestoreDB:
         
         doc_data = await self._run_sync(_get)
         if doc_data:
-            await self._cache.set(cache_key, doc_data)
-        return copy.deepcopy(doc_data) if doc_data else None
+            await self._cache.set(cache_key, copy.deepcopy(doc_data))
+        return doc_data
     
     async def update_document(self, collection: str, doc_id: str, data: Dict[str, Any]) -> bool:
         """Update a document and invalidate cache"""
@@ -432,10 +432,10 @@ class FirestoreDB:
         
         # 3. Cache fresh results and add to final results
         if fresh_docs:
-            cache_mapping = {f"{collection}:{doc['id']}": doc for doc in fresh_docs}
+            cache_mapping = {f"{collection}:{doc['id']}": copy.deepcopy(doc) for doc in fresh_docs}
             await self._cache.set_many(cache_mapping)
             for doc in fresh_docs:
-                results.append(copy.deepcopy(doc))
+                results.append(doc)
             
         return results
 
@@ -479,13 +479,17 @@ class FirestoreDB:
         user_doc = await self.get_document('users', user_id)
         if user_doc:
             circle_ids = user_doc.get('circles', [])
-            for cid in circle_ids:
-                chat_id = f"circle_{cid}"
-                chat_doc = await self.get_document('chats', chat_id)
-                if chat_doc:
-                    circle_chats.append(chat_doc)
-                else:
-                    # Fallback if chat doc doesn't exist yet but has messages
-                    circle_chats.append({'id': chat_id, 'type': 'circle', 'circle_id': cid})
+            if circle_ids:
+                chat_ids = [f"circle_{cid}" for cid in circle_ids]
+                chat_docs = await self.get_documents_batch('chats', chat_ids)
+                chat_map = {doc['id']: doc for doc in chat_docs if doc}
+                
+                for cid in circle_ids:
+                    chat_id = f"circle_{cid}"
+                    if chat_id in chat_map:
+                        circle_chats.append(chat_map[chat_id])
+                    else:
+                        # Fallback if chat doc doesn't exist yet but has messages
+                        circle_chats.append({'id': chat_id, 'type': 'circle', 'circle_id': cid})
                     
         return dm_chats + circle_chats

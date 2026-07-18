@@ -14,6 +14,8 @@ ATHARVA_VEDA_DATA_DIR = (
 )
 
 _atharvaved_kaanda_cache: Dict[int, List[Dict[str, Any]]] = {}
+_atharvaved_all_summary_cache = None
+_atharvaved_all_full_cache = None
 
 
 def _load_atharvaved_kaanda(kaanda_number: int) -> List[Dict[str, Any]]:
@@ -72,6 +74,12 @@ async def get_atharvaved_kaanda(kaanda_number: int):
 
 @router.get("/all")
 async def get_atharvaved_all(summary: bool = True):
+    global _atharvaved_all_summary_cache, _atharvaved_all_full_cache
+    if summary and _atharvaved_all_summary_cache is not None:
+        return _atharvaved_all_summary_cache
+    if not summary and _atharvaved_all_full_cache is not None:
+        return _atharvaved_all_full_cache
+
     results = await asyncio.gather(*(
         asyncio.to_thread(_load_atharvaved_kaanda, i) for i in range(1, 21)
     ))
@@ -86,4 +94,10 @@ async def get_atharvaved_all(summary: bool = True):
         }
     else:
         chapters = {i: res for i, res in enumerate(results, start=1)}
-    return {"book": "atharvaved", "chapters": chapters}
+        
+    response_data = {"book": "atharvaved", "chapters": chapters}
+    if summary:
+        _atharvaved_all_summary_cache = response_data
+    else:
+        _atharvaved_all_full_cache = response_data
+    return response_data
